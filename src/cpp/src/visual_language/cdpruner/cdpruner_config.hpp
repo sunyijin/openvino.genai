@@ -27,6 +27,9 @@ struct Config {
     
     /// @brief Threshold for numerical stability
     float numerical_threshold = 1e-6f;
+
+    /// @brief Whether to use negative relevance scores
+    bool use_negative_relevance = false;
 };
 
 } // namespace ov::genai::cdpruner 
