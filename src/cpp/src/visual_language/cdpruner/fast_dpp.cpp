@@ -44,6 +44,8 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel,
 
 std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens) {
     auto shape = kernel.get_shape();
+    long update_orthogonal_time_total = 0;
+    long update_marginal_time_total = 0;
     size_t total_tokens = shape[1];
     
     // Initialize working tensors for this batch
@@ -57,10 +59,15 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
     const float* kernel_data = kernel.data<const float>();
     float* di2s_data = di2s.data<float>();
     
+    auto init_start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < total_tokens; ++i) {
         size_t diag_idx = batch_idx * total_tokens * total_tokens + i * total_tokens + i;
         di2s_data[i] = kernel_data[diag_idx];
     }
+    auto init_end = std::chrono::high_resolution_clock::now();
+    auto init_time = std::chrono::duration_cast<std::chrono::microseconds>(init_end - init_start);
+
+    std::cout << "DPP init time is " << init_time.count() << " us" << std::endl;
     
     std::vector<size_t> selected_indices;
     selected_indices.reserve(num_tokens);
@@ -76,16 +83,28 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
         
         // Compute the new orthogonalized vector e_i
         // eis = (kernel[batch, best_idx] - sum(cis[:t] * cis[:t, best_idx])) / sqrt(di2s[best_idx])
+	auto update_orthogonal_start = std::chrono::high_resolution_clock::now();
         update_orthogonal_vector(kernel, batch_idx, best_idx, t, cis, di2s);
+	auto update_orthogonal_end = std::chrono::high_resolution_clock::now();
+	auto update_orthogonal_time = std::chrono::duration_cast<std::chrono::microseconds>(update_orthogonal_end - update_orthogonal_start);
+
+	update_orthogonal_time_total += update_orthogonal_time.count();
         
         // Update marginal gains by subtracting the squared new orthogonal vector
         // di2s -= square(eis)
+	auto update_marginal_start = std::chrono::high_resolution_clock::now();
         update_marginal_gains(t, best_idx, cis, di2s);
+	auto update_marginal_end = std::chrono::high_resolution_clock::now();
+	auto update_marginal_time = std::chrono::duration_cast<std::chrono::microseconds>(update_orthogonal_end - update_orthogonal_start);
+
+	update_marginal_time_total += update_marginal_time.count();
         
         // Set the selected token's gain to negative infinity to prevent re-selection
         di2s_data[best_idx] = -std::numeric_limits<float>::infinity();
     }
     
+    std::cout << "update orthogonal time is " << update_orthogonal_time_total << " us" << std::endl;
+    std::cout << "update marginal time is " << update_marginal_time_total << " us" << std::endl;
     // Sort the selected indices for deterministic output
     std::sort(selected_indices.begin(), selected_indices.end());
     
