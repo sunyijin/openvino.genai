@@ -76,6 +76,9 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
     std::memset(cis_data, 0, cis.get_byte_size());
     
     // Greedy selection loop - this is the core DPP algorithm
+#ifdef USE_THREAD
+    std::cout<<"use thread for update_orthogonal_vector " << std::endl;
+#endif
     for (size_t t = 0; t < num_tokens; ++t) {
         // Find the token with maximum marginal gain
         size_t best_idx = argmax(di2s);
@@ -95,7 +98,7 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
 	auto update_marginal_start = std::chrono::high_resolution_clock::now();
         update_marginal_gains(t, best_idx, cis, di2s);
 	auto update_marginal_end = std::chrono::high_resolution_clock::now();
-	auto update_marginal_time = std::chrono::duration_cast<std::chrono::microseconds>(update_orthogonal_end - update_orthogonal_start);
+	auto update_marginal_time = std::chrono::duration_cast<std::chrono::microseconds>(update_marginal_end - update_marginal_start);
 
 	update_marginal_time_total += update_marginal_time.count();
         
@@ -131,8 +134,59 @@ size_t FastGreedyDPP::argmax(const ov::Tensor& scores) {
     
     return best_idx;
 }
+#ifdef USE_THREAD
+void FastGreedyDPP::thread_worker(const float* kernel_data, const float* di2s_data, float* cis_data,
+                                  size_t batch_idx, size_t selected_idx, size_t iteration,
+                                  size_t start_j, size_t end_j, size_t total_tokens, float norm_factor) {
+    for (size_t j = start_j; j < end_j; ++j) {
+        size_t kernel_idx = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens + j;
+        float kernel_val = kernel_data[kernel_idx];
 
-void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx, 
+        float projection = 0.0f;
+        for (size_t prev_t = 0; prev_t < iteration; ++prev_t) {
+            size_t cis_selected_idx = prev_t * total_tokens + selected_idx;
+            size_t cis_j_idx = prev_t * total_tokens + j;
+            projection += cis_data[cis_selected_idx] * cis_data[cis_j_idx];
+        }
+
+        size_t cis_current_idx = iteration * total_tokens + j;
+        cis_data[cis_current_idx] = (kernel_val - projection) / norm_factor;
+    }
+}
+
+void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
+                                             size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
+    constexpr size_t num_threads = 4;
+
+    auto kernel_shape = kernel.get_shape();
+    size_t total_tokens = kernel_shape[1];
+
+    const float* kernel_data = kernel.data<const float>();
+    const float* di2s_data = di2s.data<const float>();
+    float* cis_data = cis.data<float>();
+
+    float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
+
+    std::vector<std::thread> threads;
+    size_t chunk_size = (total_tokens + num_threads - 1) / num_threads;
+
+    for (size_t t = 0; t < num_threads; ++t) {
+        size_t start_j = t * chunk_size;
+        size_t end_j = std::min(start_j + chunk_size, total_tokens);
+
+        threads.emplace_back(FastGreedyDPP::thread_worker,
+                             kernel_data, di2s_data, cis_data,
+                             batch_idx, selected_idx, iteration,
+                             start_j, end_j, total_tokens, norm_factor);
+    }
+
+    for (auto& th : threads) {
+        th.join();
+    }
+}
+
+#else
+void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
                                            size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
     // This implements the key DPP orthogonalization step:
     // eis = (kernel[batch, selected_idx] - sum(cis[:iteration] * cis[:iteration, selected_idx])) / sqrt(di2s[selected_idx])
@@ -146,7 +200,7 @@ void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t ba
     
     // Get the normalization factor
     float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
-    
+ 
     // Compute the new orthogonal vector for each token
     for (size_t j = 0; j < total_tokens; ++j) {
         // Get kernel[batch_idx, selected_idx, j]
@@ -167,6 +221,8 @@ void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t ba
         cis_data[cis_current_idx] = (kernel_val - projection) / norm_factor;
     }
 }
+#endif
+
 
 void FastGreedyDPP::update_marginal_gains(size_t iteration, size_t selected_idx, 
                                         const ov::Tensor& cis, ov::Tensor& di2s) {

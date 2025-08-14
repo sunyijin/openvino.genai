@@ -202,15 +202,15 @@ ov::Tensor CDPruner::apply_pruning(const ov::Tensor& visual_features,
     std::cout << "  Output tensor shape: [" << batch_size << ", " << m_config.num_visual_tokens << ", " << feature_dim << "]" << std::endl;
     
     // Show selected token indices for first batch (for debugging)
-    if (!selected_tokens.empty() && m_config.debug_mode) {
+    if (!selected_tokens.empty()) {
         std::cout << "Selected token indices (batch 0): [";
         const auto& first_batch_tokens = selected_tokens[0];
-        for (size_t i = 0; i < std::min(static_cast<size_t>(10), first_batch_tokens.size()); ++i) {
+        for (size_t i = 0; i < std::min(static_cast<size_t>(100), first_batch_tokens.size()); ++i) {
             if (i > 0) std::cout << ", ";
             std::cout << first_batch_tokens[i];
         }
-        if (first_batch_tokens.size() > 10) {
-            std::cout << ", ... (+" << (first_batch_tokens.size() - 10) << " more)";
+        if (first_batch_tokens.size() > 100) {
+            std::cout << ", ... (+" << (first_batch_tokens.size() - 100) << " more)";
         }
         std::cout << "]" << std::endl;
     }

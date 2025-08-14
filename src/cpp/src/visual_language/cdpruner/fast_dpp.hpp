@@ -6,6 +6,9 @@
 #include "cdpruner_config.hpp"
 #include "openvino/runtime/tensor.hpp"
 #include <vector>
+#include <thread>
+
+#define USE_THREAD
 
 namespace ov::genai::cdpruner {
 
@@ -93,7 +96,11 @@ private:
      */
     void update_marginal_gains(size_t iteration, size_t selected_idx, 
                              const ov::Tensor& cis, ov::Tensor& di2s);
-
+#ifdef USE_THREAD
+    static void thread_worker(const float* kernel_data, const float* di2s_data, float* cis_data,
+                       size_t batch_idx, size_t selected_idx, size_t iteration,
+                       size_t start_j, size_t end_j, size_t total_tokens, float norm_factor);
+#endif
     Config m_config;
 };
 
