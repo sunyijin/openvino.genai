@@ -652,7 +652,7 @@ InputsEmbedderQwen2VL::InputsEmbedderQwen2VL(
     
     // [CDPruner] Initialize CDPruner with hardcoded configuration
     ov::genai::cdpruner::Config cdpruner_config;
-    cdpruner_config.num_visual_tokens = 300;  // Hardcoded 40% retention rate for Qwen2.5-VL
+    cdpruner_config.num_visual_tokens = 740;  // Hardcoded 40% retention rate for Qwen2.5-VL
     cdpruner_config.relevance_weight = 0.5f;  // Balance between relevance and diversity
     cdpruner_config.enable_pruning = true;    // Enable pruning functionality
     cdpruner_config.device = device;          // Use same device as the model

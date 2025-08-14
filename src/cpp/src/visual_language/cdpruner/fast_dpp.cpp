@@ -12,7 +12,112 @@ namespace ov::genai::cdpruner {
 
 FastGreedyDPP::FastGreedyDPP(const Config& config) : m_config(config) {
     // Constructor implementation
+    thread_total_time = 0;
+#ifdef USE_THREAD1
+    stop_flag = false;
+    finished_count = 0;
+
+    thread_tasks.resize(num_threads);
+    task_mutexes = std::vector<std::mutex>(num_threads);
+    task_cvs = std::vector<std::condition_variable>(num_threads);
+
+    for (size_t i = 0; i < num_threads; ++i) {
+        threads.emplace_back(&FastGreedyDPP::thread_main, this, i);
+    }
+
+#endif
 }
+
+
+FastGreedyDPP::~FastGreedyDPP() {
+#ifdef USE_THREAD1
+    stop_flag = true;
+    for (size_t i = 0; i < num_threads; ++i) {
+        task_cvs[i].notify_one();
+    }
+    for (auto& th : threads) {
+        if (th.joinable()) th.join();
+    }
+#endif
+}
+
+#ifdef USE_THREAD1
+
+void FastGreedyDPP::thread_main(size_t thread_id) {
+    while (!stop_flag) {
+        std::unique_lock<std::mutex> lock(task_mutexes[thread_id]);
+        task_cvs[thread_id].wait(lock, [this, thread_id] {
+            return stop_flag || thread_tasks[thread_id].has_work;
+        });
+
+        if (stop_flag) return;
+
+        ThreadTask& task = thread_tasks[thread_id];
+        for (size_t j = task.start_j; j < task.end_j; ++j) {
+            size_t kernel_idx = task.batch_idx * task.total_tokens * task.total_tokens +
+                                task.selected_idx * task.total_tokens + j;
+            float kernel_val = task.kernel_data[kernel_idx];
+
+            float projection = 0.0f;
+            for (size_t prev_t = 0; prev_t < task.iteration; ++prev_t) {
+                size_t cis_selected_idx = prev_t * task.total_tokens + task.selected_idx;
+                size_t cis_j_idx = prev_t * task.total_tokens + j;
+                projection += task.cis_data[cis_selected_idx] * task.cis_data[cis_j_idx];
+            }
+
+            size_t cis_current_idx = task.iteration * task.total_tokens + j;
+            task.cis_data[cis_current_idx] = (kernel_val - projection) / task.norm_factor;
+        }
+
+        task.has_work = false;
+
+        {
+            std::lock_guard<std::mutex> lock(wait_mutex);
+            finished_count++;
+            if (finished_count == num_threads) {
+                wait_cv.notify_one();
+            }
+        }
+    }
+}
+
+void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
+                                             size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
+    auto kernel_shape = kernel.get_shape();
+    size_t total_tokens = kernel_shape[1];
+
+    const float* kernel_data = kernel.data<const float>();
+    const float* di2s_data = di2s.data<const float>();
+    float* cis_data = cis.data<float>();
+
+    float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
+    size_t chunk_size = (total_tokens + num_threads - 1) / num_threads;
+
+    finished_count = 0;
+
+    for (size_t t = 0; t < num_threads; ++t) {
+        ThreadTask& task = thread_tasks[t];
+        task.kernel_data = kernel_data;
+        task.di2s_data = di2s_data;
+        task.cis_data = cis_data;
+        task.batch_idx = batch_idx;
+        task.selected_idx = selected_idx;
+        task.iteration = iteration;
+        task.start_j = t * chunk_size;
+        task.end_j = std::min(task.start_j + chunk_size, total_tokens);
+        task.total_tokens = total_tokens;
+        task.norm_factor = norm_factor;
+        task.has_work = true;
+
+        task_cvs[t].notify_one();
+    }
+
+    std::unique_lock<std::mutex> lock(wait_mutex);
+    wait_cv.wait(lock, [this] { return finished_count == num_threads; });
+}
+
+
+#endif
 
 std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel, size_t num_tokens) {
     // Input validation
@@ -107,6 +212,7 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
     }
     
     std::cout << "update orthogonal time is " << update_orthogonal_time_total << " us" << std::endl;
+    std::cout << "update thread time is " << thread_total_time << " us" << std::endl;
     std::cout << "update marginal time is " << update_marginal_time_total << " us" << std::endl;
     // Sort the selected indices for deterministic output
     std::sort(selected_indices.begin(), selected_indices.end());
@@ -167,6 +273,9 @@ void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t ba
 
     float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
 
+
+    auto thread_start = std::chrono::high_resolution_clock::now();
+
     std::vector<std::thread> threads;
     size_t chunk_size = (total_tokens + num_threads - 1) / num_threads;
 
@@ -179,13 +288,19 @@ void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t ba
                              batch_idx, selected_idx, iteration,
                              start_j, end_j, total_tokens, norm_factor);
     }
+    auto thread_end = std::chrono::high_resolution_clock::now();
+    auto thread_time = std::chrono::duration_cast<std::chrono::microseconds>(thread_end - thread_start);
+    //std::cout << "thread time and total time is " << thread_time << " total: " << thread_total_time << std::endl;
+    thread_total_time += thread_time.count();
+
 
     for (auto& th : threads) {
         th.join();
     }
 }
 
-#else
+#endif
+#ifdef NO_THREAD
 void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
                                            size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
     // This implements the key DPP orthogonalization step:

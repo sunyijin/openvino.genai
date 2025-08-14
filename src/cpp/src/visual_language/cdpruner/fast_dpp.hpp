@@ -7,8 +7,14 @@
 #include "openvino/runtime/tensor.hpp"
 #include <vector>
 #include <thread>
+#include <condition_variable>
+#include <atomic>
+#include <mutex>
 
-#define USE_THREAD
+//#define USE_THREAD
+//#define USE_THREAD1
+#define NO_THREAD
+
 
 namespace ov::genai::cdpruner {
 
@@ -31,6 +37,7 @@ public:
     /// @brief Constructor
     /// @param config Configuration for the DPP selector
     explicit FastGreedyDPP(const Config& config);
+    ~FastGreedyDPP();
     
     /**
      * @brief Select diverse tokens using fast greedy DPP algorithm
@@ -59,6 +66,7 @@ public:
                                                  const std::vector<size_t>& selected_indices);
 
 private:
+    long thread_total_time;
     /**
      * @brief Select tokens for a single batch
      * @param kernel Kernel matrix [B, N, N]
@@ -101,6 +109,35 @@ private:
                        size_t batch_idx, size_t selected_idx, size_t iteration,
                        size_t start_j, size_t end_j, size_t total_tokens, float norm_factor);
 #endif
+
+#ifdef USE_THREAD1
+    void thread_main(size_t thread_id);
+
+    struct ThreadTask {
+        const float* kernel_data = nullptr;
+        const float* di2s_data = nullptr;
+        float* cis_data = nullptr;
+        size_t batch_idx = 0;
+        size_t selected_idx = 0;
+        size_t iteration = 0;
+        size_t start_j = 0;
+        size_t end_j = 0;
+        size_t total_tokens = 0;
+        float norm_factor = 0.0f;
+        bool has_work = false;
+    };
+
+    static constexpr size_t num_threads = 4;
+    std::vector<std::thread> threads;
+    std::vector<ThreadTask> thread_tasks;
+    std::vector<std::mutex> task_mutexes;
+    std::vector<std::condition_variable> task_cvs;
+    std::atomic<bool> stop_flag;
+    std::atomic<size_t> finished_count;
+    std::mutex wait_mutex;
+    std::condition_variable wait_cv;
+#endif
+
     Config m_config;
 };
 
