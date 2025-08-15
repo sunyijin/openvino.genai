@@ -13,7 +13,6 @@
 
 //#define USE_THREAD
 //#define USE_THREAD1
-#define NO_THREAD
 
 
 namespace ov::genai::cdpruner {
@@ -108,10 +107,14 @@ private:
     static void thread_worker(const float* kernel_data, const float* di2s_data, float* cis_data,
                        size_t batch_idx, size_t selected_idx, size_t iteration,
                        size_t start_j, size_t end_j, size_t total_tokens, float norm_factor);
+    void update_orthogonal_vector_thread(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
+                    size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s);
 #endif
 
 #ifdef USE_THREAD1
     void thread_main(size_t thread_id);
+    void update_orthogonal_vector_thread(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
+                    size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s);
 
     struct ThreadTask {
         const float* kernel_data = nullptr;
