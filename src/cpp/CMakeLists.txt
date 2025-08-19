@@ -93,6 +93,15 @@ set(TARGET_NAME_OBJ ${TARGET_NAME}_obj)
 
 add_library(${TARGET_NAME_OBJ} OBJECT ${SOURCE_FILES})
 
+target_compile_options(${TARGET_NAME_OBJ} PRIVATE -fopenmp)
+
+target_link_options(${TARGET_NAME_OBJ} PRIVATE -fopenmp)
+
+if(WIN32)
+    target_compile_options(${TARGET_NAME_OBJ} PRIVATE /openmp)
+endif()
+
+
 target_include_directories(${TARGET_NAME_OBJ}
     PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
            "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>"
@@ -117,6 +126,13 @@ set_target_properties(${TARGET_NAME_OBJ} PROPERTIES POSITION_INDEPENDENT_CODE ON
 
 add_library(${TARGET_NAME} SHARED $<TARGET_OBJECTS:${TARGET_NAME_OBJ}>)
 add_library(openvino::genai ALIAS ${TARGET_NAME})
+
+target_link_options(${TARGET_NAME} PRIVATE -fopenmp)
+
+if(WIN32)
+    target_compile_options(${TARGET_NAME} PRIVATE /openmp)
+endif()
+
 
 target_include_directories(${TARGET_NAME} INTERFACE "$<INSTALL_INTERFACE:runtime/include>"
                                                     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

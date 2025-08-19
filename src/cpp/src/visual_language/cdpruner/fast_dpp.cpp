@@ -333,7 +333,10 @@ void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t ba
     //std::cout << "===== start update_orthogonal_vector with iteration " << iteration << std::endl;
  
     // Compute the new orthogonal vector for each token
-    for (size_t j = 0; j < total_tokens; ++j) {
+#ifdef USE_OMP
+    #pragma omp parallel for
+#endif
+    for (int j = 0; j < total_tokens; ++j) {
         // Get kernel[batch_idx, selected_idx, j]
         size_t kernel_idx = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens + j;
         float kernel_val = kernel_data[kernel_idx];

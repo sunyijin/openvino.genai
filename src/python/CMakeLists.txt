@@ -29,6 +29,9 @@ set_target_properties(${TARGET_NAME} PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/openvino_genai/>"
     LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/openvino_genai/>"
 )
+
+target_link_options(${TARGET_NAME} PRIVATE -fopenmp)
+
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/openvino_genai/__init__.py"
           "${CMAKE_CURRENT_SOURCE_DIR}/openvino_genai/__init__.pyi"
           "${CMAKE_CURRENT_SOURCE_DIR}/openvino_genai/py_openvino_genai.pyi"
