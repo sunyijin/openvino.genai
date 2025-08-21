@@ -30,6 +30,9 @@ struct Config {
 
     /// @brief Whether to use negative relevance scores
     bool use_negative_relevance = false;
+
+    /// @brief Number of images
+    size_t num_images = 1;
 };
 
 } // namespace ov::genai::cdpruner 

@@ -730,6 +730,7 @@ std::pair<std::string, std::vector<size_t>> InputsEmbedderQwen2VL::normalize_pro
 }
 
 ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_prompt, const std::vector<ov::genai::EncodedImage>& images, ov::genai::VLMPerfMetrics& metrics, bool recalculate_merged_embeddings, const std::vector<size_t>& images_sequence) {
+    std::cout << "image size  " << images.size() << std::endl;
     std::vector<std::array<size_t, 3>> images_grid_thw;
     images_grid_thw.reserve(images.size());
     for (const auto& encoded_image : images) {
@@ -785,6 +786,8 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
 
     auto pruner_config = m_cdpruner->get_config();
     bool pruner_enabled = pruner_config.enable_pruning;
+
+    m_cdpruner->set_num_images(images.size());
     
     if (m_cdpruner && pruner_enabled && !images.empty()) {
         // Store original visual token count for position adjustment

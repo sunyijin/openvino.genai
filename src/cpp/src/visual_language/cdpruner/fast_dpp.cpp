@@ -119,7 +119,7 @@ void FastGreedyDPP::update_orthogonal_vector_thread(const ov::Tensor& kernel, si
 
 #endif
 
-std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel, size_t num_tokens) {
+std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel, size_t num_tokens, size_t num_images) {
     // Input validation
     if (kernel.get_shape().size() != 3) {
         throw std::invalid_argument("Kernel must be 3D tensor [B, N, N]");
@@ -141,82 +141,98 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel,
     
     // Process each batch independently
     for (size_t b = 0; b < batch_size; ++b) {
-        batch_results[b] = select_single_batch(kernel, b, num_tokens);
+        batch_results[b] = select_single_batch(kernel, b, num_tokens, num_images);
     }
     
     return batch_results;
 }
 
-std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens) {
+std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens, size_t num_images) {
     auto shape = kernel.get_shape();
     long update_orthogonal_time_total = 0;
     long update_marginal_time_total = 0;
     size_t total_tokens = shape[1];
+    size_t total_tokens_inner = total_tokens / num_images;
     
-    // Initialize working tensors for this batch
-    // cis: Orthogonalized vectors [T, N] where T is the number of selected tokens
-    ov::Tensor cis(ov::element::f32, {num_tokens, total_tokens});
+    std::vector<size_t> num_tokens_iter(num_images, num_tokens/num_images);
     
-    // di2s: Diagonal elements (marginal gains) [N]
-    ov::Tensor di2s(ov::element::f32, {total_tokens});
-    
-    // Copy diagonal elements from kernel for this batch
-    const float* kernel_data = kernel.data<const float>();
-    float* di2s_data = di2s.data<float>();
-    
-    auto init_start = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < total_tokens; ++i) {
-        size_t diag_idx = batch_idx * total_tokens * total_tokens + i * total_tokens + i;
-        di2s_data[i] = kernel_data[diag_idx];
-    }
-    auto init_end = std::chrono::high_resolution_clock::now();
-    auto init_time = std::chrono::duration_cast<std::chrono::microseconds>(init_end - init_start);
+    int remainder = num_tokens % num_images;
 
-    std::cout << "DPP init time is " << init_time.count() << " us" << std::endl;
-    
+    // Distribute extra tokens to the frontal remainder group, one per group
+    for (int i = 0; i < remainder; ++i) {
+        num_tokens_iter[i]++;
+    }
+
+    ov::Tensor kernel_inner(ov::element::f32, {shape[0], total_tokens_inner, total_tokens_inner});
+    float* kernel_inner_data = kernel_inner.data<float>();
+    const float* kernel_data = kernel.data<const float>();
+
     std::vector<size_t> selected_indices;
     selected_indices.reserve(num_tokens);
-    
-    float* cis_data = cis.data<float>();
-    std::memset(cis_data, 0, cis.get_byte_size());
-    
-    // Greedy selection loop - this is the core DPP algorithm
-#ifdef USE_THREAD
-    std::cout<<"use thread for update_orthogonal_vector " << std::endl;
-#endif
-    for (size_t t = 0; t < num_tokens; ++t) {
-        // Find the token with maximum marginal gain
-        size_t best_idx = argmax(di2s);
-        selected_indices.push_back(best_idx);
-        
-        // Compute the new orthogonalized vector e_i
-        // eis = (kernel[batch, best_idx] - sum(cis[:t] * cis[:t, best_idx])) / sqrt(di2s[best_idx])
-	auto update_orthogonal_start = std::chrono::high_resolution_clock::now();
-        update_orthogonal_vector(kernel, batch_idx, best_idx, t, cis, di2s);
-	auto update_orthogonal_end = std::chrono::high_resolution_clock::now();
-	auto update_orthogonal_time = std::chrono::duration_cast<std::chrono::microseconds>(update_orthogonal_end - update_orthogonal_start);
 
-	update_orthogonal_time_total += update_orthogonal_time.count();
+    for (size_t iter = 0; iter < num_images; iter++){
+        // Initialize working tensors for this batch
+        // kernel_inner: sub diagonal kernel from origin kernel
+        for (size_t i = 0; i < total_tokens / num_images; i++) {
+            for (size_t j = 0; j < total_tokens / num_images; j++) {
+                size_t kernel_idx = batch_idx * total_tokens * total_tokens + (i + iter * total_tokens_inner) * total_tokens + j + iter * total_tokens_inner;
+                size_t kernel_inner_idx = batch_idx * total_tokens_inner * total_tokens_inner + i * total_tokens_inner + j;
+                kernel_inner_data[kernel_inner_idx] = kernel_data[kernel_idx];
+            }
+        }
+        // cis: Orthogonalized vectors [T, N] where T is the number of selected tokens
+        ov::Tensor cis(ov::element::f32, {num_tokens_iter[iter], total_tokens_inner});
         
-        // Update marginal gains by subtracting the squared new orthogonal vector
-        // di2s -= square(eis)
-	auto update_marginal_start = std::chrono::high_resolution_clock::now();
-        update_marginal_gains(t, best_idx, cis, di2s);
-	auto update_marginal_end = std::chrono::high_resolution_clock::now();
-	auto update_marginal_time = std::chrono::duration_cast<std::chrono::microseconds>(update_marginal_end - update_marginal_start);
+        // di2s: Diagonal elements (marginal gains) [N]
+        ov::Tensor di2s(ov::element::f32, {total_tokens_inner});
+        
+        // Copy diagonal elements from kernel for this batch
+        
+        float* di2s_data = di2s.data<float>();
 
-	update_marginal_time_total += update_marginal_time.count();
-        
-        // Set the selected token's gain to negative infinity to prevent re-selection
-        di2s_data[best_idx] = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < total_tokens_inner; ++i) {
+            size_t diag_idx = batch_idx * total_tokens_inner * total_tokens_inner + i * total_tokens_inner + i;
+            di2s_data[i] = kernel_inner_data[diag_idx];
+        }
+
+        std::vector<size_t> selected_indices_inner;
+        selected_indices_inner.reserve(num_tokens_iter[iter]);
+
+        float* cis_data = cis.data<float>();
+        std::memset(cis_data, 0, cis.get_byte_size());
+
+        // Greedy selection loop - this is the core DPP algorithm
+    #ifdef USE_THREAD
+        std::cout<<"use thread for update_orthogonal_vector " << std::endl;
+    #endif
+        for (size_t t = 0; t < num_tokens_iter[iter]; ++t) {
+            // Find the token with maximum marginal gain
+            size_t best_idx = argmax(di2s);
+            selected_indices_inner.push_back(best_idx);
+
+            // Compute the new orthogonalized vector e_i
+            // eis = (kernel[batch, best_idx] - sum(cis[:t] * cis[:t, best_idx])) / sqrt(di2s[best_idx])
+            update_orthogonal_vector(kernel_inner, batch_idx, best_idx, t, cis, di2s);
+
+            // Update marginal gains by subtracting the squared new orthogonal vector
+            // di2s -= square(eis)
+            update_marginal_gains(t, best_idx, cis, di2s);
+
+            // Set the selected token's gain to negative infinity to prevent re-selection
+            di2s_data[best_idx] = -std::numeric_limits<float>::infinity();
+        }
+
+        for (auto item:selected_indices_inner) {
+            selected_indices.push_back(item + iter * total_tokens_inner);
+        }
     }
-    
+
     std::cout << "update orthogonal time is " << update_orthogonal_time_total << " us" << std::endl;
     std::cout << "update thread time is " << thread_total_time << " us" << std::endl;
     std::cout << "update marginal time is " << update_marginal_time_total << " us" << std::endl;
     // Sort the selected indices for deterministic output
     std::sort(selected_indices.begin(), selected_indices.end());
-    
+
     return selected_indices;
 }
 

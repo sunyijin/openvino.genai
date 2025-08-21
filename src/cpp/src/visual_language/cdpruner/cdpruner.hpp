@@ -54,6 +54,8 @@ public:
      * @param config Configuration for CDPruner
      */
     explicit CDPruner(const Config& config);
+
+    void set_num_images(size_t num_images) { m_config.num_images = num_images; }
     
     /**
      * @brief Select diverse and relevant visual tokens

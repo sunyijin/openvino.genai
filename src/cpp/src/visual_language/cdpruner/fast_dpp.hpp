@@ -45,7 +45,7 @@ public:
      * @param num_tokens Number of tokens to select
      * @return Selected token indices for each batch [B, T]
      */
-    std::vector<std::vector<size_t>> select(const ov::Tensor& kernel, size_t num_tokens);
+    std::vector<std::vector<size_t>> select(const ov::Tensor& kernel, size_t num_tokens, size_t num_images=1);
 
     /**
      * @brief Create boolean mask from selected indices
@@ -74,7 +74,7 @@ private:
      * @param num_tokens Number of tokens to select
      * @return Selected token indices for this batch
      */
-    std::vector<size_t> select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens);
+    std::vector<size_t> select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens, size_t num_images=1);
 
     /**
      * @brief Find index with maximum value

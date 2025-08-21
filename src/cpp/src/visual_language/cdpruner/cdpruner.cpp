@@ -77,7 +77,7 @@ std::vector<std::vector<size_t>> CDPruner::select_tokens(const ov::Tensor& visua
             std::cout << "Step 3: Selecting tokens using DPP..." << std::endl;
         }
         auto dpp_start = std::chrono::high_resolution_clock::now();
-        std::vector<std::vector<size_t>> selected_tokens = m_dpp_selector.select(kernel_matrix, m_config.num_visual_tokens);
+        std::vector<std::vector<size_t>> selected_tokens = m_dpp_selector.select(kernel_matrix, m_config.num_visual_tokens, m_config.num_images);
         auto dpp_end = std::chrono::high_resolution_clock::now();
         
         auto dpp_duration = std::chrono::duration_cast<std::chrono::microseconds>(dpp_end - dpp_start);
