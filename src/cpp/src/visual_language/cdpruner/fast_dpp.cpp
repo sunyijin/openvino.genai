@@ -227,9 +227,6 @@ std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel,
         }
     }
 
-    std::cout << "update orthogonal time is " << update_orthogonal_time_total << " us" << std::endl;
-    std::cout << "update thread time is " << thread_total_time << " us" << std::endl;
-    std::cout << "update marginal time is " << update_marginal_time_total << " us" << std::endl;
     // Sort the selected indices for deterministic output
     std::sort(selected_indices.begin(), selected_indices.end());
 
@@ -350,6 +347,7 @@ void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t ba
  
     // Compute the new orthogonal vector for each token
 #ifdef USE_OMP
+    std::cout << "omp enabled" << std::endl;
     #pragma omp parallel for
 #endif
     for (int j = 0; j < total_tokens; ++j) {

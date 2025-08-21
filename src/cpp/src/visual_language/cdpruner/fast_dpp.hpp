@@ -13,7 +13,7 @@
 
 //#define USE_THREAD
 //#define USE_THREAD1
-#define USE_OMP
+//#define USE_OMP
 
 
 namespace ov::genai::cdpruner {
