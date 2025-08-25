@@ -850,7 +850,7 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
     // [CDPruner] Handle pruned visual tokens case
     if (m_cdpruner && pruner_enabled  && !images.empty() && original_visual_tokens != pruned_visual_tokens) {
         // Visual tokens have been pruned, need to create new merged embeddings with correct dimensions
-        return merge_text_and_image_embeddings_with_pruning(input_ids, text_embeds, merged_image_embeddings_tensor, image_pad_token_id, original_visual_tokens);
+        return merge_text_and_image_embeddings_with_pruning(input_ids, text_embeds, merged_image_embeddings_tensor, image_pad_token_id, original_visual_tokens, images.size());
     } else {
         // No pruning or no images, use original function
         return qwen2_vl_utils::merge_text_and_image_embeddings(input_ids, text_embeds, merged_image_embeddings_tensor, image_pad_token_id);
@@ -1316,7 +1316,8 @@ ov::Tensor InputsEmbedderQwen2VL::merge_text_and_image_embeddings_with_pruning(c
                                                                  const ov::Tensor& text_embeds,
                                                                  const ov::Tensor& pruned_vision_embeds,
                                                                  int64_t image_pad_token_id,
-                                                                 size_t original_visual_tokens) {
+                                                                 size_t original_visual_tokens,
+                                                                 size_t num_images) {
     auto text_embeds_shape = text_embeds.get_shape();
     size_t batch_size = text_embeds_shape.at(0);
     size_t original_seq_length = text_embeds_shape.at(1);  // original sequence length (text + original visual)
@@ -1338,22 +1339,36 @@ ov::Tensor InputsEmbedderQwen2VL::merge_text_and_image_embeddings_with_pruning(c
     size_t vision_embed_idx = 0;
     size_t output_idx = 0;
     
+    size_t image_idx = 0;
+    size_t original_num_image_tokens = original_visual_tokens / num_images;
+    std::vector<int64_t> image_token_start_indices;
+
+    std::vector<size_t> num_image_tokens(num_images, pruned_visual_tokens / num_images);
+    size_t remainder = pruned_visual_tokens % num_images;
+
+    // Distribute extra tokens to the frontal remainder group, one per group
+    for (size_t i = 0; i < remainder; ++i) {
+        num_image_tokens[i]++;
+    }
+
+
     for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
-        for (size_t seq_idx = 0; seq_idx < original_seq_length; ++seq_idx) {
+        for (size_t seq_idx = 0; seq_idx < original_seq_length; ) {
             size_t input_flat_idx = batch_idx * original_seq_length + seq_idx;
             
             if (input_ids_data[input_flat_idx] == image_pad_token_id) {
-                // This is a visual token position
-                if (vision_embed_idx < pruned_visual_tokens) {
-                    // Copy from pruned visual embeddings
-                    std::copy_n(
-                        vision_embeds_data + vision_embed_idx * hidden_size,
-                        hidden_size,
-                        merged_embeds_data + output_idx * hidden_size
-                    );
-                    output_idx++;
-                }
-                vision_embed_idx++;
+                image_token_start_indices.push_back(input_flat_idx);
+
+                // Copy all the visual tokens in an image
+                std::copy_n(
+                    vision_embeds_data + vision_embed_idx * hidden_size,
+                    hidden_size * num_image_tokens[image_idx],
+                    merged_embeds_data + output_idx * hidden_size
+                );
+                seq_idx += original_num_image_tokens;
+                output_idx += num_image_tokens[image_idx];
+                vision_embed_idx += num_image_tokens[image_idx];
+                image_idx++;
             } else {
                 // This is a text token, copy from text_embeds
                 std::copy_n(
@@ -1362,10 +1377,18 @@ ov::Tensor InputsEmbedderQwen2VL::merge_text_and_image_embeddings_with_pruning(c
                     merged_embeds_data + output_idx * hidden_size
                 );
                 output_idx++;
+                seq_idx ++;
             }
         }
     }
-    
+
+    std::cout << "merged output token count = " << output_idx << "\n";
+    std::cout << "Merged image token start index:";
+    for (auto idx : image_token_start_indices) {
+        std::cout << idx << " ";
+    }
+    std::cout << std::endl;
+
     return merged_embeds;
 }
 
