@@ -113,7 +113,8 @@ protected:
                                               const ov::Tensor& text_embeds,
                                               const ov::Tensor& pruned_vision_embeds,
                                               int64_t image_pad_token_id,
-                                              size_t original_visual_tokens);
+                                              size_t original_visual_tokens,
+                                              size_t num_images);
 };
 
 namespace qwen2_vl_utils {
