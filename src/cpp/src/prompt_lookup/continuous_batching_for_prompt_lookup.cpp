@@ -76,6 +76,14 @@ void ContinuousBatchingPipeline::ContinuousBatchingForPromptLookupImpl::generate
             }
             TokenIds candidates = generate_candidates(full_input_ids, min_num_assistant_tokens, sampling_params.max_ngram_size);
 
+	    if (candidates.size() < sampling_params.num_assistant_tokens) {
+                auto token_sz = candidates.size();
+                for (int ci = 0; ci < sampling_params.num_assistant_tokens - token_sz; ci ++) {
+                    candidates.push_back(15000);
+                }
+            }
+            // std::cout << "candidates.size() = " << candidates.size() << std::endl;
+
             if (!candidates.empty()) {
                 for (const auto& candidate : candidates) {
                     running_sequence->append_token(candidate, 0);
