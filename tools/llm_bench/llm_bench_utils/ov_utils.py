@@ -612,7 +612,7 @@ def create_genai_image_text_gen_model(model_path, device, ov_config, memory_moni
     if kwargs.get("mem_consumption"):
         memory_monitor.start()
     start = time.perf_counter()
-    llm_pipe = openvino_genai.VLMPipeline(model_path, device.upper(), **ov_config)
+    llm_pipe = openvino_genai.VLMPipeline(model_path, device.upper(), prompt_lookup=True, **ov_config)
     end = time.perf_counter()
     log.info("Selected OpenVINO GenAI for benchmarking")
     if kwargs.get("mem_consumption"):

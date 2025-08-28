@@ -222,6 +222,8 @@ def run_visual_language_generation_genai(
     gen_config.do_sample = False
     gen_config.ignore_eos = True
     gen_config.is_video = True
+    gen_config.max_ngram_size = 2
+    gen_config.num_assistant_tokens = 3
     kwargs = {}
     if len(images) >= 1:
         kwargs["images"] = images
