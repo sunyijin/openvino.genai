@@ -208,6 +208,15 @@ ContinuousBatchingPipeline::ContinuousBatchingImpl::add_request(uint64_t request
 
     SequenceGroup::Ptr sequence_group = std::make_shared<SequenceGroup>(request_id, input_ids, sampling_params, m_block_size);
 
+    // WA: Add model specified position ids
+    if (m_inputs_embedder) {
+        ov::Tensor position_ids;
+        std::optional<int64_t> rope_delta;
+        std::tie(position_ids, rope_delta) = m_inputs_embedder->get_position_ids(0, 0);
+
+        sequence_group->set_position_ids(position_ids, rope_delta.has_value() ? rope_delta.value() : 0);
+    }
+
     if (m_scheduler->get_config().enable_prefix_caching) {
         m_scheduler->restore_cached_blocks(sequence_group);
     }
