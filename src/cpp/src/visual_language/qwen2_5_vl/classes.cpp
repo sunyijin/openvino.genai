@@ -151,8 +151,16 @@ ov::Tensor InputsEmbedderQwen2_5_VL::run_image_embeddings_merger(
 ) {
     auto [reordered_image_embeds, reordered_images_grid_thw] = qwen2_vl_utils::reorder_image_embeds_and_grid_thw(images, images_sequence);
 
+    ov::Tensor attention_mask;
+    ov::Tensor window_attention_mask;
+    size_t hidden_states_size;
+
     ov::Tensor concatenated_embeds = qwen2_vl_utils::concatenate_image_embeds(reordered_image_embeds);
-    ov::Tensor attention_mask = qwen2_vl_utils::get_attention_mask(reordered_images_grid_thw);
+
+    if (!m_with_cu_seqlens_input) {
+        attention_mask = qwen2_vl_utils::get_attention_mask(reordered_images_grid_thw); // 41ms
+    }
+
     ov::Tensor cu_seq_lens = qwen2_vl_utils::get_cu_seqlens(reordered_images_grid_thw);
     ov::Tensor rotary_pos_emb = get_rotary_pos_emb(reordered_images_grid_thw);
 
@@ -161,8 +169,12 @@ ov::Tensor InputsEmbedderQwen2_5_VL::run_image_embeddings_merger(
         m_vision_encoder->get_processor_config(),
         m_vlm_config
     );
-    size_t hidden_states_size = attention_mask.get_shape().at(1);
-    ov::Tensor window_attention_mask = qwen2_5_vl_utils::get_window_attention_mask(hidden_states_size, cu_window_seqlens);
+
+    if (!m_with_cu_seqlens_input) {
+        hidden_states_size = attention_mask.get_shape().at(1);
+        window_attention_mask = qwen2_5_vl_utils::get_window_attention_mask(hidden_states_size, cu_window_seqlens); //38ms
+    }
+
     ov::Tensor t_cu_window_seqlens = qwen2_5_vl_utils::get_cu_window_seqlens(cu_window_seqlens);
 
     CircularBufferQueueElementGuard<ov::InferRequest> infer_request_guard(this->m_ireq_queue_vision_embeddings_merger.get());
