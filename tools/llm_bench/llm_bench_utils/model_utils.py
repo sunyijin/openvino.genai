@@ -106,7 +106,8 @@ def read_wav(filepath, sampling_rate):
 def set_default_param_for_ov_config(ov_config):
     # With this PR https://github.com/huggingface/optimum-intel/pull/362, we are able to disable model cache
     if 'CACHE_DIR' not in ov_config:
-        ov_config['CACHE_DIR'] = ''
+        ov_config['CACHE_DIR'] = 'llm'
+        ov_config['CACHE_MODE'] = 'OPTIMIZE_SIZE'
 
 
 def analyze_args(args):
