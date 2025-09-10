@@ -159,7 +159,7 @@ public:
         ov::Tensor input_ids = _get_or_resize_tensor(m_cached_input_ids, "input_ids",
                                                      {total_num_tokens}, ov::element::i64);
         ov::Tensor inputs_embeds = _get_or_resize_tensor(m_cached_inputs_embeds, "inputs_embeds",
-                                                        {total_num_tokens, hidden_size}, ov::element::f32);
+                                                        {total_num_tokens, hidden_size}, ov::element::f32);     
         ov::Tensor position_ids = _get_or_resize_tensor(m_cached_position_ids, "position_ids",
                                                        {total_num_tokens}, ov::element::i64);
 
@@ -338,6 +338,40 @@ public:
             m_request.set_tensor("score_aggregation_window", score_aggregation_window);
         }
 
+        // WA mrope for qwen2-vl
+        if (num_sequence_groups == 1) {
+            auto sequence_group = sequence_groups[0];
+            auto input_position_ids = sequence_group->get_position_ids();
+            if (input_position_ids.get_shape().size() == 3) {
+                size_t num_scheduled_tokens = sequence_group->get_num_scheduled_tokens();
+                if (num_scheduled_tokens > 1) {
+                    m_request.set_tensor("position_ids", input_position_ids);
+                } else {
+                    ov::Tensor position_ids(ov::element::i64, {3, 1, 1});
+                    auto rope_delta = sequence_group->get_rope_delta();
+                    auto sequence_length = sequence_group->get_context_len();
+                    int64_t pos_id = static_cast<int64_t>(sequence_length) - 1 + rope_delta;
+                    int64_t* position_ids_data = position_ids.data<int64_t>();        
+                    for (size_t dim = 0; dim < 3; ++dim) {
+                        position_ids_data[dim] = pos_id;
+                    }
+                    m_request.set_tensor("position_ids", position_ids);
+                }
+            }
+        }
+#if 0
+        // print the position id before infer
+        {
+            auto pos = m_request.get_tensor("position_ids");
+            auto pos_data = pos.data<uint64_t>();
+            std::cout << "++++++++++++ PA infer position_ids shape=" << pos.get_shape()
+                       <<" data:";
+            for (size_t i = 0; i < pos.get_size(); i++) {
+                std::cout <<pos_data[i] << ",";
+            }
+            std::cout << std::endl;
+        }
+#endif
         {
             static ManualTimer timer("pure generate inference");
             timer.start();

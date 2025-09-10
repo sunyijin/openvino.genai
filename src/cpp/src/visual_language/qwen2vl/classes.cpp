@@ -790,7 +790,7 @@ ov::Tensor InputsEmbedderQwen2VL::get_inputs_embeds(const std::string& unified_p
     size_t pruned_visual_tokens = 0;
 
     auto pruner_config = m_cdpruner->get_config();
-    bool pruner_enabled = pruner_config.enable_pruning;
+    bool pruner_enabled = false; //pruner_config.enable_pruning;
 
     m_cdpruner->set_num_images(images.size());
     

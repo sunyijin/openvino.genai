@@ -245,6 +245,8 @@ class SequenceGroup  : public std::enable_shared_from_this<SequenceGroup> {
     std::size_t m_block_size;
     TokenIds m_prompt_ids;
     std::vector<std::vector<float>> m_input_embeds;
+    ov::Tensor m_position_ids;
+    int64_t m_rope_delta;
     std::vector<float> m_prompt_log_probs;
     GenerationStream::Ptr m_generation_stream;
     size_t m_num_evicted_tokens = 0;
@@ -328,6 +330,19 @@ public:
 
         // create a single sequence
         add_sequence(Sequence::create(m_next_sequence_id++, m_sequence_group_type, hidden_size));
+    }
+
+    void set_position_ids(ov::Tensor position_ids, int64_t rope_delta) {
+        m_position_ids = position_ids;
+        m_rope_delta = rope_delta;
+    }
+
+    ov::Tensor get_position_ids() const {
+        return m_position_ids;
+    }
+
+    int64_t get_rope_delta() const {
+        return m_rope_delta;
     }
 
     void add_sequence(const Sequence::Ptr & sequence) {
