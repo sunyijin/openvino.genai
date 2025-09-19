@@ -7,119 +7,83 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <iostream>
+#include <iomanip>
+
+// SIMD headers
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
 
 namespace ov::genai::cdpruner {
 
+// SIMD optimized vector subtraction: out[i] -= scalar * in[i]
+inline void simd_vector_sub_scalar_mul(float* out, const float* in, float scalar, size_t size) {
+    size_t i = 0;
+
+#ifdef __AVX__
+    // AVX: Process 8 floats at a time
+    const __m256 scalar_vec = _mm256_set1_ps(scalar);
+    for (; i + 8 <= size; i += 8) {
+        __m256 out_vec = _mm256_loadu_ps(&out[i]);
+        __m256 in_vec = _mm256_loadu_ps(&in[i]);
+        __m256 mul_result = _mm256_mul_ps(scalar_vec, in_vec);
+        __m256 result = _mm256_sub_ps(out_vec, mul_result);
+        _mm256_storeu_ps(&out[i], result);
+    }
+#elif defined(__SSE2__)
+    // SSE2: Process 4 floats at a time
+    const __m128 scalar_vec = _mm_set1_ps(scalar);
+    for (; i + 4 <= size; i += 4) {
+        __m128 out_vec = _mm_loadu_ps(&out[i]);
+        __m128 in_vec = _mm_loadu_ps(&in[i]);
+        __m128 mul_result = _mm_mul_ps(scalar_vec, in_vec);
+        __m128 result = _mm_sub_ps(out_vec, mul_result);
+        _mm_storeu_ps(&out[i], result);
+    }
+#endif
+
+    // Process remaining elements with scalar code
+    for (; i < size; ++i) {
+        out[i] -= scalar * in[i];
+    }
+}
+
+// SIMD optimized vector multiplication by scalar: out[i] *= scalar
+inline void simd_vector_mul_scalar(float* out, float scalar, size_t size) {
+    size_t i = 0;
+
+#ifdef __AVX__
+    // AVX: Process 8 floats at a time
+    const __m256 scalar_vec = _mm256_set1_ps(scalar);
+    for (; i + 8 <= size; i += 8) {
+        __m256 out_vec = _mm256_loadu_ps(&out[i]);
+        __m256 result = _mm256_mul_ps(out_vec, scalar_vec);
+        _mm256_storeu_ps(&out[i], result);
+    }
+#elif defined(__SSE2__)
+    // SSE2: Process 4 floats at a time
+    const __m128 scalar_vec = _mm_set1_ps(scalar);
+    for (; i + 4 <= size; i += 4) {
+        __m128 out_vec = _mm_loadu_ps(&out[i]);
+        __m128 result = _mm_mul_ps(out_vec, scalar_vec);
+        _mm_storeu_ps(&out[i], result);
+    }
+#endif
+
+    // Process remaining elements with scalar code
+    for (; i < size; ++i) {
+        out[i] *= scalar;
+    }
+}
+
 FastGreedyDPP::FastGreedyDPP(const Config& config) : m_config(config) {
     // Constructor implementation
-    thread_total_time = 0;
-#ifdef USE_THREAD1
-    stop_flag = false;
-    finished_count = 0;
-
-    thread_tasks.resize(num_threads);
-    task_mutexes = std::vector<std::mutex>(num_threads);
-    task_cvs = std::vector<std::condition_variable>(num_threads);
-
-    for (size_t i = 0; i < num_threads; ++i) {
-        threads.emplace_back(&FastGreedyDPP::thread_main, this, i);
-    }
-
-#endif
 }
 
-
-FastGreedyDPP::~FastGreedyDPP() {
-#ifdef USE_THREAD1
-    stop_flag = true;
-    for (size_t i = 0; i < num_threads; ++i) {
-        task_cvs[i].notify_one();
-    }
-    for (auto& th : threads) {
-        if (th.joinable()) th.join();
-    }
-#endif
-}
-
-#ifdef USE_THREAD1
-
-void FastGreedyDPP::thread_main(size_t thread_id) {
-    while (!stop_flag) {
-        std::unique_lock<std::mutex> lock(task_mutexes[thread_id]);
-        task_cvs[thread_id].wait(lock, [this, thread_id] {
-            return stop_flag || thread_tasks[thread_id].has_work;
-        });
-
-        if (stop_flag) return;
-
-        ThreadTask& task = thread_tasks[thread_id];
-        for (size_t j = task.start_j; j < task.end_j; ++j) {
-            size_t kernel_idx = task.batch_idx * task.total_tokens * task.total_tokens +
-                                task.selected_idx * task.total_tokens + j;
-            float kernel_val = task.kernel_data[kernel_idx];
-
-            float projection = 0.0f;
-            for (size_t prev_t = 0; prev_t < task.iteration; ++prev_t) {
-                size_t cis_selected_idx = prev_t * task.total_tokens + task.selected_idx;
-                size_t cis_j_idx = prev_t * task.total_tokens + j;
-                projection += task.cis_data[cis_selected_idx] * task.cis_data[cis_j_idx];
-            }
-
-            size_t cis_current_idx = task.iteration * task.total_tokens + j;
-            task.cis_data[cis_current_idx] = (kernel_val - projection) / task.norm_factor;
-        }
-
-        task.has_work = false;
-
-        {
-            std::lock_guard<std::mutex> lock(wait_mutex);
-            finished_count++;
-            if (finished_count == num_threads) {
-                wait_cv.notify_one();
-            }
-        }
-    }
-}
-
-void FastGreedyDPP::update_orthogonal_vector_thread(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
-                                             size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
-    auto kernel_shape = kernel.get_shape();
-    size_t total_tokens = kernel_shape[1];
-
-    const float* kernel_data = kernel.data<const float>();
-    const float* di2s_data = di2s.data<const float>();
-    float* cis_data = cis.data<float>();
-
-    float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
-    size_t chunk_size = (total_tokens + num_threads - 1) / num_threads;
-
-    finished_count = 0;
-
-    for (size_t t = 0; t < num_threads; ++t) {
-        ThreadTask& task = thread_tasks[t];
-        task.kernel_data = kernel_data;
-        task.di2s_data = di2s_data;
-        task.cis_data = cis_data;
-        task.batch_idx = batch_idx;
-        task.selected_idx = selected_idx;
-        task.iteration = iteration;
-        task.start_j = t * chunk_size;
-        task.end_j = std::min(task.start_j + chunk_size, total_tokens);
-        task.total_tokens = total_tokens;
-        task.norm_factor = norm_factor;
-        task.has_work = true;
-
-        task_cvs[t].notify_one();
-    }
-
-    std::unique_lock<std::mutex> lock(wait_mutex);
-    wait_cv.wait(lock, [this] { return finished_count == num_threads; });
-}
-
-
-#endif
-
-std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel, size_t num_tokens, size_t num_images) {
+std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel, size_t num_tokens) {
     // Input validation
     if (kernel.get_shape().size() != 3) {
         throw std::invalid_argument("Kernel must be 3D tensor [B, N, N]");
@@ -137,99 +101,136 @@ std::vector<std::vector<size_t>> FastGreedyDPP::select(const ov::Tensor& kernel,
         throw std::invalid_argument("Cannot select more tokens than available");
     }
     
+    // Debug output: report which SIMD instruction set is being used
+    {
+        static bool simd_logged = false;
+        if (!simd_logged) {
+#ifdef __AVX__
+            std::cout << "[CDPruner] Using AVX SIMD instructions for vector operations (8 floats/operation)" << std::endl;
+#elif defined(__SSE2__)
+            std::cout << "[CDPruner] Using SSE2 SIMD instructions for vector operations (4 floats/operation)" << std::endl;
+#else
+            std::cout << "[CDPruner] Using scalar operations (no SIMD acceleration)" << std::endl;
+#endif
+            simd_logged = true;
+        }
+    }
+    
     std::vector<std::vector<size_t>> batch_results(batch_size);
     
     // Process each batch independently
     for (size_t b = 0; b < batch_size; ++b) {
-        batch_results[b] = select_single_batch(kernel, b, num_tokens, num_images);
+        batch_results[b] = select_single_batch(kernel, b, num_tokens);
     }
     
     return batch_results;
 }
 
-std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens, size_t num_images) {
+std::vector<size_t> FastGreedyDPP::select_single_batch(const ov::Tensor& kernel, size_t batch_idx, size_t num_tokens) {
     auto shape = kernel.get_shape();
-    long update_orthogonal_time_total = 0;
-    long update_marginal_time_total = 0;
     size_t total_tokens = shape[1];
-    size_t total_tokens_inner = total_tokens / num_images;
     
-    std::vector<size_t> num_tokens_iter(num_images, num_tokens/num_images);
+    // Initialize working tensors for this batch
+    // cis: Orthogonalized vectors [T, N] where T is the number of selected tokens
+    ov::Tensor cis(ov::element::f32, {num_tokens, total_tokens});
     
-    int remainder = num_tokens % num_images;
-
-    // Distribute extra tokens to the frontal remainder group, one per group
-    for (int i = 0; i < remainder; ++i) {
-        num_tokens_iter[i]++;
-    }
-
-    ov::Tensor kernel_inner(ov::element::f32, {shape[0], total_tokens_inner, total_tokens_inner});
-    float* kernel_inner_data = kernel_inner.data<float>();
+    // di2s: Diagonal elements (marginal gains) [N]
+    ov::Tensor di2s(ov::element::f32, {total_tokens});
+    
+    // Copy diagonal elements from kernel for this batch
     const float* kernel_data = kernel.data<const float>();
-
+    float* di2s_data = di2s.data<float>();
+    
+    for (size_t i = 0; i < total_tokens; ++i) {
+        size_t diag_idx = batch_idx * total_tokens * total_tokens + i * total_tokens + i;
+        di2s_data[i] = kernel_data[diag_idx];
+    }
+    
     std::vector<size_t> selected_indices;
     selected_indices.reserve(num_tokens);
+    
+    float* cis_data = cis.data<float>();
+    std::memset(cis_data, 0, cis.get_byte_size());
+    
+    // Greedy selection loop - this is the core DPP algorithm
+    for (size_t t = 0; t < num_tokens; ++t) {
+        // Find the token with maximum marginal gain
+        size_t best_idx = argmax(di2s);
+        selected_indices.push_back(best_idx);
+        
+        // Compute the new orthogonalized vector e_i
+        // eis = (kernel[batch, best_idx] - sum(cis[:t] * cis[:t, best_idx])) / sqrt(di2s[best_idx])
+        update_orthogonal_vector(kernel, batch_idx, best_idx, t, cis, di2s);
+        
+        // Update marginal gains by subtracting the squared new orthogonal vector
+        // di2s -= square(eis)
+        update_marginal_gains(t, cis, di2s);
 
-    for (size_t iter = 0; iter < num_images; iter++){
-        // Initialize working tensors for this batch
-        // kernel_inner: sub diagonal kernel from origin kernel
-        for (size_t i = 0; i < total_tokens / num_images; i++) {
-            for (size_t j = 0; j < total_tokens / num_images; j++) {
-                size_t kernel_idx = batch_idx * total_tokens * total_tokens + (i + iter * total_tokens_inner) * total_tokens + j + iter * total_tokens_inner;
-                size_t kernel_inner_idx = batch_idx * total_tokens_inner * total_tokens_inner + i * total_tokens_inner + j;
-                kernel_inner_data[kernel_inner_idx] = kernel_data[kernel_idx];
+        // Debug output: print cis matrix content
+        if (m_config.pruning_debug_mode && t < 10) {
+            std::cout << "[CDPruner] === CIS Matrix Content after iteration " << t << " ===" << std::endl;
+            std::cout << "[CDPruner] CIS matrix shape: [" << (t+1) << ", " << total_tokens << "]" << std::endl;
+            
+            const float* cis_data_debug = cis.data<const float>();
+            size_t print_tokens = std::min(total_tokens, static_cast<size_t>(10));
+            
+            // Print each orthogonal vector (each row of cis) - only first 10 elements
+            for (size_t row = 0; row <= t; ++row) {
+                std::cout << "[CDPruner] cis[" << row << "] (orthogonal vector for selected token " 
+                          << selected_indices[row] << "): [";
+                
+                for (size_t col = 0; col < print_tokens; ++col) {
+                    if (col > 0) std::cout << ", ";
+                    size_t idx = row * total_tokens + col;
+                    std::cout << std::fixed << std::setprecision(4) << cis_data_debug[idx];
+                }
+                
+                if (total_tokens > 10) {
+                    std::cout << ", ... (" << (total_tokens - 10) << " more)";
+                }
+                std::cout << "]" << std::endl;
             }
-        }
-        // cis: Orthogonalized vectors [T, N] where T is the number of selected tokens
-        ov::Tensor cis(ov::element::f32, {num_tokens_iter[iter], total_tokens_inner});
-        
-        // di2s: Diagonal elements (marginal gains) [N]
-        ov::Tensor di2s(ov::element::f32, {total_tokens_inner});
-        
-        // Copy diagonal elements from kernel for this batch
-        
-        float* di2s_data = di2s.data<float>();
-
-        for (size_t i = 0; i < total_tokens_inner; ++i) {
-            size_t diag_idx = batch_idx * total_tokens_inner * total_tokens_inner + i * total_tokens_inner + i;
-            di2s_data[i] = kernel_inner_data[diag_idx];
+            std::cout << std::endl;
         }
 
-        std::vector<size_t> selected_indices_inner;
-        selected_indices_inner.reserve(num_tokens_iter[iter]);
+        // Debug output: print updated conditional kernel matrix after each selection
+        if (m_config.pruning_debug_mode && t < 10) {
+            // Print current selected indices
+            std::cout << "[CDPruner] Selected tokens so far: [";
+            for (size_t i = 0; i < selected_indices.size(); ++i) {
+                if (i > 0)
+                    std::cout << ", ";
+                std::cout << selected_indices[i];
+            }
+            std::cout << "]" << std::endl;
 
-        float* cis_data = cis.data<float>();
-        std::memset(cis_data, 0, cis.get_byte_size());
-
-        // Greedy selection loop - this is the core DPP algorithm
-    #ifdef USE_THREAD
-        std::cout<<"use thread for update_orthogonal_vector " << std::endl;
-    #endif
-        for (size_t t = 0; t < num_tokens_iter[iter]; ++t) {
-            // Find the token with maximum marginal gain
-            size_t best_idx = argmax(di2s);
-            selected_indices_inner.push_back(best_idx);
-
-            // Compute the new orthogonalized vector e_i
-            // eis = (kernel[batch, best_idx] - sum(cis[:t] * cis[:t, best_idx])) / sqrt(di2s[best_idx])
-            update_orthogonal_vector(kernel_inner, batch_idx, best_idx, t, cis, di2s);
-
-            // Update marginal gains by subtracting the squared new orthogonal vector
-            // di2s -= square(eis)
-            update_marginal_gains(t, best_idx, cis, di2s);
-
-            // Set the selected token's gain to negative infinity to prevent re-selection
-            di2s_data[best_idx] = -std::numeric_limits<float>::infinity();
+            // Print current marginal gains (di2s) - limited to first 10 elements
+            std::cout << "[CDPruner] Current marginal gains: [";
+            const float* di2s_data_debug = di2s.data<const float>();
+            size_t print_gains_size = std::min(total_tokens, static_cast<size_t>(10));
+            
+            for (size_t i = 0; i < print_gains_size; ++i) {
+                if (i > 0)
+                    std::cout << ", ";
+                if (di2s_data_debug[i] == -std::numeric_limits<float>::infinity()) {
+                    std::cout << "-inf";
+                } else {
+                    std::cout << std::fixed << std::setprecision(4) << di2s_data_debug[i];
+                }
+            }
+            if (total_tokens > 10) {
+                std::cout << ", ... (" << (total_tokens - 10) << " more elements)";
+            }
+            std::cout << "]" << std::endl << std::endl;
         }
 
-        for (auto item:selected_indices_inner) {
-            selected_indices.push_back(item + iter * total_tokens_inner);
-        }
+        // Set the selected token's gain to negative infinity to prevent re-selection
+        di2s_data[best_idx] = -std::numeric_limits<float>::infinity();
     }
-
+    
     // Sort the selected indices for deterministic output
     std::sort(selected_indices.begin(), selected_indices.end());
-
+    
     return selected_indices;
 }
 
@@ -242,9 +243,9 @@ size_t FastGreedyDPP::argmax(const ov::Tensor& scores) {
     }
     
     size_t best_idx = 0;
-    float best_value = data[0];
-    
-    for (size_t i = 1; i < size; ++i) {
+    float best_value = -std::numeric_limits<float>::infinity();
+
+    for (size_t i = 0; i < size; ++i) {
         if (data[i] > best_value) {
             best_value = data[i];
             best_idx = i;
@@ -253,130 +254,44 @@ size_t FastGreedyDPP::argmax(const ov::Tensor& scores) {
     
     return best_idx;
 }
-#ifdef USE_THREAD
-void FastGreedyDPP::thread_worker(const float* kernel_data, const float* di2s_data, float* cis_data,
-                                  size_t batch_idx, size_t selected_idx, size_t iteration,
-                                  size_t start_j, size_t end_j, size_t total_tokens, float norm_factor) {
-    for (size_t j = start_j; j < end_j; ++j) {
-        size_t kernel_idx = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens + j;
-        float kernel_val = kernel_data[kernel_idx];
 
-        float projection = 0.0f;
-        for (size_t prev_t = 0; prev_t < iteration; ++prev_t) {
-            size_t cis_selected_idx = prev_t * total_tokens + selected_idx;
-            size_t cis_j_idx = prev_t * total_tokens + j;
-            projection += cis_data[cis_selected_idx] * cis_data[cis_j_idx];
-        }
-
-        size_t cis_current_idx = iteration * total_tokens + j;
-        cis_data[cis_current_idx] = (kernel_val - projection) / norm_factor;
-    }
-}
-
-void FastGreedyDPP::update_orthogonal_vector_thread(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
-                                             size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
-    constexpr size_t num_threads = 4;
-
-    auto kernel_shape = kernel.get_shape();
-    size_t total_tokens = kernel_shape[1];
-
-    const float* kernel_data = kernel.data<const float>();
-    const float* di2s_data = di2s.data<const float>();
-    float* cis_data = cis.data<float>();
-
-    float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
-
-
-    auto thread_start = std::chrono::high_resolution_clock::now();
-
-    std::vector<std::thread> threads;
-    size_t chunk_size = (total_tokens + num_threads - 1) / num_threads;
-
-    for (size_t t = 0; t < num_threads; ++t) {
-        size_t start_j = t * chunk_size;
-        size_t end_j = std::min(start_j + chunk_size, total_tokens);
-
-        threads.emplace_back(FastGreedyDPP::thread_worker,
-                             kernel_data, di2s_data, cis_data,
-                             batch_idx, selected_idx, iteration,
-                             start_j, end_j, total_tokens, norm_factor);
-    }
-    auto thread_end = std::chrono::high_resolution_clock::now();
-    auto thread_time = std::chrono::duration_cast<std::chrono::microseconds>(thread_end - thread_start);
-    //std::cout << "thread time and total time is " << thread_time << " total: " << thread_total_time << std::endl;
-    thread_total_time += thread_time.count();
-
-
-    for (auto& th : threads) {
-        th.join();
-    }
-}
-
-#endif
-
-void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx,
+void FastGreedyDPP::update_orthogonal_vector(const ov::Tensor& kernel, size_t batch_idx, size_t selected_idx, 
                                            size_t iteration, ov::Tensor& cis, const ov::Tensor& di2s) {
     // This implements the key DPP orthogonalization step:
     // eis = (kernel[batch, selected_idx] - sum(cis[:iteration] * cis[:iteration, selected_idx])) / sqrt(di2s[selected_idx])
-    #ifdef USE_THREAD
-    int start_iteration = 50; // start_iteration = iteration means no thread
-    if (iteration > start_iteration)
-    {
-        return update_orthogonal_vector_thread(kernel, batch_idx, selected_idx, iteration, cis, di2s);
-    }
-    #endif
-    #ifdef USE_THREAD1
-    int start_iteration = 50; // start_iteration = iteration means no thread
-    if (iteration > start_iteration)
-    {
-        return update_orthogonal_vector_thread(kernel, batch_idx, selected_idx, iteration, cis, di2s);
-    }
-    #endif
-    
     auto kernel_shape = kernel.get_shape();
     size_t total_tokens = kernel_shape[1];
     
     const float* kernel_data = kernel.data<const float>();
     const float* di2s_data = di2s.data<const float>();
     float* cis_data = cis.data<float>();
-    
     // Get the normalization factor
     float norm_factor = std::sqrt(di2s_data[selected_idx] + m_config.numerical_threshold);
-    //std::cout << "di2s_data[selected_idx] is " << di2s_data[selected_idx] << ", norm_factor is " << norm_factor << std::endl;
-    //std::cout << "===== start update_orthogonal_vector with iteration " << iteration << std::endl;
- 
-    // Compute the new orthogonal vector for each token
-#ifdef USE_OMP
-    std::cout << "omp enabled" << std::endl;
-    #pragma omp parallel for
-#endif
-    for (int j = 0; j < total_tokens; ++j) {
-        // Get kernel[batch_idx, selected_idx, j]
-        size_t kernel_idx = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens + j;
-        float kernel_val = kernel_data[kernel_idx];
-        
-        // Subtract the projection onto previously selected vectors
-        // sum(cis[:iteration, selected_idx] * cis[:iteration, j])
-        float projection = 0.0f;
-        for (size_t prev_t = 0; prev_t < iteration; ++prev_t) {
-            size_t cis_selected_idx = prev_t * total_tokens + selected_idx;
-            size_t cis_j_idx = prev_t * total_tokens + j;
-            projection += cis_data[cis_selected_idx] * cis_data[cis_j_idx];
-        }
-        
-        // Store the orthogonalized vector element
-        size_t cis_current_idx = iteration * total_tokens + j;
-        //std::cout << "j:" << j << ", kernel_val is " << kernel_val << ", projection is " << projection << std::endl;
-        cis_data[cis_current_idx] = (kernel_val - projection) / norm_factor;
-	//std::cout << " cis_data[" << cis_current_idx << "] is " << cis_data[cis_current_idx] << std::endl;
+    float inv_norm = 1.0f / norm_factor;
+
+    size_t base_kernel_offset = batch_idx * total_tokens * total_tokens + selected_idx * total_tokens;
+    const float* kernel_row = kernel_data + base_kernel_offset;
+
+    float* cis_out = cis_data + iteration * total_tokens;
+
+    std::memcpy(cis_out, kernel_row, total_tokens * sizeof(float));
+
+    for (size_t prev_t = 0; prev_t < iteration; ++prev_t) {
+        const float* cis_prev_row = cis_data + prev_t * total_tokens;
+        float cis_sel = cis_prev_row[selected_idx];
+
+        if (std::abs(cis_sel) < 1e-10f)
+            continue;
+
+        // SIMD optimized vector subtraction: cis_out[j] -= cis_sel * cis_prev_row[j]
+        simd_vector_sub_scalar_mul(cis_out, cis_prev_row, cis_sel, total_tokens);
     }
-    //std::cout << "finish update_orthogonal_vector with iteration " << iteration << std::endl;
+
+    // SIMD optimized vector multiplication: cis_out[j] *= inv_norm
+    simd_vector_mul_scalar(cis_out, inv_norm, total_tokens);
 }
 
-
-
-void FastGreedyDPP::update_marginal_gains(size_t iteration, size_t selected_idx, 
-                                        const ov::Tensor& cis, ov::Tensor& di2s) {
+void FastGreedyDPP::update_marginal_gains(size_t iteration, const ov::Tensor& cis, ov::Tensor& di2s) {
     // This implements: di2s -= square(eis)
     // where eis is the newly computed orthogonal vector cis[iteration, :]
     
@@ -388,10 +303,18 @@ void FastGreedyDPP::update_marginal_gains(size_t iteration, size_t selected_idx,
     
     // Update marginal gains for all tokens
     for (size_t j = 0; j < total_tokens; ++j) {
+        // Skip updating if this token is already selected (marked as negative infinity)
+        if (di2s_data[j] == -std::numeric_limits<float>::infinity()) {
+            continue;
+        }
+        
         size_t cis_idx = iteration * total_tokens + j;
         float eis_j = cis_data[cis_idx];
-        
         // Subtract the squared orthogonal component
+        if (std::isnan(eis_j)) {
+            di2s_data[j] = -std::numeric_limits<float>::max();
+            continue;
+        }
         di2s_data[j] -= eis_j * eis_j;
     }
 }

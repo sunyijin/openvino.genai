@@ -188,6 +188,7 @@ std::vector<ov::genai::EncodedImage> InputsEmbedder::IInputsEmbedder::encode_ima
     return embeds;
 }
 
+
 ov::Tensor InputsEmbedder::IInputsEmbedder::get_inputs_embeds(const std::string& prompt, const std::vector<ov::Tensor>& images, ov::genai::VLMPerfMetrics& metrics, const std::vector<size_t>& image_sequence) {
     return get_inputs_embeds(prompt, encode_images(images), metrics, true, image_sequence);
 }
@@ -290,6 +291,18 @@ void InputsEmbedder::set_apply_chat_template_status(bool apply_chat_template) {
 
 void InputsEmbedder::finish_chat() {
     return m_impl->finish_chat();
+}
+
+void InputsEmbedder::set_visual_token_pruning_config(size_t visual_tokens_retain_percentage,
+                                                     float relevance_weight,
+                                                     bool enable_pruning,
+                                                     bool pruning_debug_mode,
+                                                     bool use_ops_model) {
+    return m_impl->set_visual_token_pruning_config(visual_tokens_retain_percentage,
+                                                   relevance_weight,
+                                                   enable_pruning,
+                                                   pruning_debug_mode,
+                                                   use_ops_model);
 }
 
 std::pair<std::string, std::vector<size_t>> InputsEmbedder::normalize_prompt(

@@ -224,6 +224,15 @@ def run_visual_language_generation_genai(
     gen_config.is_video = True
     gen_config.max_ngram_size = 2
     gen_config.num_assistant_tokens = 3
+    # Configure CDPruner
+    gen_config.enable_pruning = bool(args.get('enable_pruning', False))
+    if gen_config.enable_pruning:
+        if args.get('visual_tokens_retain_percentage') is not None:
+            gen_config.visual_tokens_retain_percentage = args['visual_tokens_retain_percentage']
+        if args.get('relevance_weight') is not None:
+            gen_config.relevance_weight = args['relevance_weight']
+        if args.get('pruning_debug_mode') is not None:
+            gen_config.pruning_debug_mode = bool(args['pruning_debug_mode'])
     kwargs = {}
     if len(images) >= 1:
         kwargs["images"] = images
