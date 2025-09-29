@@ -25,9 +25,9 @@ VisionEncoder::VisionEncoder(const std::filesystem::path& model_dir, const std::
         });
     m_processor_config = utils::from_config_json_if_exists<ProcessorConfig>(model_dir, "preprocessor_config.json");
 
-    // [CDPruner] Initialize CDPruner with hardcoded configuration
+    // [CDPruner] Initialize CDPruner with default configuration
     ov::genai::cdpruner::Config cdpruner_config;
-    cdpruner_config.enable_pruning = true;       // Enable pruning functionality
+    cdpruner_config.pruning_ratio = 50;           // 50% pruning by default
     cdpruner_config.device = device;             // Use same device as the model
     cdpruner_config.pruning_debug_mode = false;  // Disable debug output for production
     m_cdpruner = std::make_unique<ov::genai::cdpruner::CDPruner>(cdpruner_config);
@@ -49,11 +49,11 @@ VisionEncoder::VisionEncoder(
         });
     m_processor_config = utils::from_config_json_if_exists<ProcessorConfig>(config_dir_path, "preprocessor_config.json");
 
-    // [CDPruner] Initialize CDPruner with hardcoded configuration
+    // [CDPruner] Initialize CDPruner with default configuration
     ov::genai::cdpruner::Config cdpruner_config;
-    cdpruner_config.enable_pruning = true;  // Enable pruning functionality
-    cdpruner_config.device = device;        // Use same device as the model
-    cdpruner_config.pruning_debug_mode = false;     // Disable debug output for production
+    cdpruner_config.pruning_ratio = 50;           // 50% pruning by default
+    cdpruner_config.device = device;             // Use same device as the model
+    cdpruner_config.pruning_debug_mode = false;  // Disable debug output for production
     m_cdpruner = std::make_unique<ov::genai::cdpruner::CDPruner>(cdpruner_config);
 }
 
@@ -106,42 +106,14 @@ VisionEncoder::Ptr VisionEncoder::create(
     }
 }
 
-ov::Tensor concatenate_pruned_features(const std::vector<ov::Tensor>& pruned_features) {
-    ov::Tensor concatenated_features;
-    if (pruned_features.size() == 1) {
-        concatenated_features = pruned_features.at(0);
-    } else {
-        size_t total_length = 0;
-        for (const auto& embed : pruned_features) {
-            total_length += embed.get_shape().at(1);
-        }
-        size_t hidden_dim = pruned_features.at(0).get_shape().at(2);
-
-        concatenated_features = ov::Tensor(pruned_features.at(0).get_element_type(), {1, total_length, hidden_dim});
-        float* concat_data = concatenated_features.data<float>();
-
-        size_t offset = 0;
-        for (const auto& embed : pruned_features) {
-            size_t embed_size = embed.get_shape().at(0) * embed.get_shape().at(1)* embed.get_shape().at(2);
-            std::memcpy(concat_data + offset, embed.data(), embed.get_byte_size());
-            offset += embed_size;
-        }
-    }
-    return concatenated_features;
-}
-
 ov::Tensor VisionEncoder::apply_pruning(const std::vector<ov::Tensor>& visual_features,
                                         const ov::Tensor& text_features) {
     if (!m_cdpruner) {
         return ov::Tensor();
     }
 
-    std::vector<ov::Tensor> pruned_visual_features_list;
-    for (auto& visual_feature : visual_features) {
-        ov::Tensor pruned_visual_feature = m_cdpruner->apply_pruning(visual_feature, text_features);
-        pruned_visual_features_list.push_back(pruned_visual_feature);
-    }
-    return concatenate_pruned_features(pruned_visual_features_list);
+    // Delegate the entire multi-frame processing to CDPruner
+    return m_cdpruner->apply_pruning(visual_features, text_features);
 }
 
 bool VisionEncoder::is_pruning_available() {

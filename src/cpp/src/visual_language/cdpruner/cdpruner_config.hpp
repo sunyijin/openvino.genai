@@ -12,13 +12,10 @@ namespace ov::genai::cdpruner {
 /// @brief Configuration structure for CDPruner algorithm
 struct Config {
     /// @brief Percentage of visual tokens to retain after pruning (0-100)
-    size_t visual_tokens_retain_percentage = 50;
+    size_t pruning_ratio = 0;
     
     /// @brief Weight for balancing relevance vs diversity (0.0 to 1.0)
     float relevance_weight = 0.5f;
-    
-    /// @brief Whether to enable pruning functionality
-    bool enable_pruning = true;
     
     /// @brief Device to run CDPruner computations on
     std::string device = "CPU";
@@ -33,27 +30,27 @@ struct Config {
     /// This is needed for CLIP-based models (like LLaVA) due to counterintuitive similarity values
     bool use_negative_relevance = false;
 
-    /// @brief Whether to use OpenVINO ops model for computation
-    /// When true, uses integrated OpenVINO ops model for relevance and kernel computation
-    /// When false, uses traditional step-by-step computation pipeline
-    bool use_ops_model = false;
-    /// @brief Compare two Config structures for equality
-    /// @param other The other Config to compare with
-    /// @return true if all configuration parameters are equal, false otherwise
-    bool operator==(const Config& other) const {
-        return visual_tokens_retain_percentage == other.visual_tokens_retain_percentage &&
-               std::abs(relevance_weight - other.relevance_weight) < 1e-6f && enable_pruning == other.enable_pruning &&
-               device == other.device && pruning_debug_mode == other.pruning_debug_mode &&
-               std::abs(numerical_threshold - other.numerical_threshold) < 1e-9f &&
-               use_negative_relevance == other.use_negative_relevance && use_ops_model == other.use_ops_model;
-    }
+    /// @brief Whether to use OpenCL kernel for DPP computation
+    /// When true, uses OpenCL GPU acceleration for DPP selection
+    /// When false, uses traditional CPU-based DPP algorithm
+    bool use_cl_kernel = true;
 
+    /// @brief Threshold for splitting large kernel matrices (internal use only)
+    /// When visual tokens exceed this threshold, the kernel matrix will be split
+    /// for parallel processing. This parameter is not exposed in public API.
+    size_t split_threshold = 2000;
+
+    /// @brief Whether to enable frame-level chunking for multi-frame video processing
+    /// When true, each frame in multi-frame input will be processed separately for DPP pruning
+    /// When false, all frames will be concatenated and processed together
+    /// Default is false to maintain existing behavior
+    bool enable_frame_chunking = true;
+
+    bool operator==(const Config& other) const;
     /// @brief Compare two Config structures for inequality
     /// @param other The other Config to compare with
     /// @return true if any configuration parameters differ, false otherwise
-    bool operator!=(const Config& other) const {
-        return !(*this == other);
-    }
+    bool operator!=(const Config& other) const;
 };
 
 } // namespace ov::genai::cdpruner 

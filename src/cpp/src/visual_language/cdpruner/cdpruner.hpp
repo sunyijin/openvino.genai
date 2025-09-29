@@ -40,8 +40,7 @@ struct PruningStatistics {
  * Usage example:
  * ```cpp
  * Config config;
- * config.visual_tokens_retain_percentage = 30;
- * config.enable_pruning = true;
+ * config.pruning_ratio = 50;  // 50% pruning, set to 0 to disable
  * 
  * CDPruner pruner(config);
  * auto selected_tokens = pruner.select_tokens(visual_features, text_features);
@@ -60,28 +59,29 @@ public:
      * @brief Select diverse and relevant visual tokens
      * @param visual_features Input visual features [B, N, D]
      * @param text_features Input text features [M, D]
+     * @param silent If true, suppress detailed logging output
      * @return Selected token indices for each batch [B, T]
      */
-    std::vector<std::vector<size_t>> select_tokens(const ov::Tensor& visual_features, 
-                                                  const ov::Tensor& text_features);
-    
-    /**
-     * @brief Create pruning mask for selected tokens
-     * @param visual_features Input visual features [B, N, D]
-     * @param text_features Input text features [M, D]
-     * @return Boolean mask [B*N] where true indicates selected tokens
-     */
-    std::vector<bool> create_pruning_mask(const ov::Tensor& visual_features, 
-                                        const ov::Tensor& text_features);
+    std::vector<std::vector<size_t>> select_tokens(const ov::Tensor& visual_features,
+                                                   const ov::Tensor& text_features,
+                                                   bool silent = false);
     
     /**
      * @brief Apply pruning and return only selected features
      * @param visual_features Input visual features [B, N, D]
      * @param text_features Input text features [M, D]
-     * @return Pruned visual features [B, T, D] where T is calculated from visual_tokens_retain_percentage
+     * @param silent If true, suppress detailed logging output
+     * @return Pruned visual features [B, T, D] where T is calculated from pruning_ratio
      */
-    ov::Tensor apply_pruning(const ov::Tensor& visual_features, 
-                           const ov::Tensor& text_features);
+    ov::Tensor apply_pruning(const ov::Tensor& visual_features, const ov::Tensor& text_features, bool silent = false);
+
+    /**
+     * @brief Apply pruning to multiple visual features and return concatenated result
+     * @param visual_features_list Vector of input visual features, each [B, N, D]
+     * @param text_features Input text features [M, D]
+     * @return Concatenated pruned visual features [B, T*num_frames, D] where T is calculated from pruning_ratio
+     */
+    ov::Tensor apply_pruning(const std::vector<ov::Tensor>& visual_features_list, const ov::Tensor& text_features);
     
     /**
      * @brief Get current configuration
@@ -121,22 +121,6 @@ private:
      * @throws std::invalid_argument if configuration is invalid
      */
     void validate_config(const Config& config);
-    
-    /**
-     * @brief Helper function to perform parallel DPP selection on two kernel matrices
-     * @param kernel_matrix_first First half kernel matrix
-     * @param kernel_matrix_second Second half kernel matrix  
-     * @param num_tokens_to_keep Total number of tokens to keep
-     * @param split_point Index where tokens are split between halves
-     * @param dpp_duration Output parameter for DPP timing
-     * @return Merged selection indices
-     */
-    std::vector<size_t> perform_parallel_dpp_selection(
-        const ov::Tensor& kernel_matrix_first, 
-        const ov::Tensor& kernel_matrix_second,
-        size_t num_tokens_to_keep,
-        size_t split_point,
-        std::chrono::microseconds& dpp_duration);
     
     /**
      * @brief Validate input tensor shapes and types
