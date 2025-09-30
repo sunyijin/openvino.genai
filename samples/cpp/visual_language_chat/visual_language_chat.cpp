@@ -11,14 +11,14 @@ bool print_subword(std::string&& subword) {
 
 int main(int argc, char* argv[]) try {
     if (3 > argc || argc > 6) {
-        throw std::runtime_error(std::string{"Usage: "} + argv[0] + " <MODEL_DIR> <IMAGE_FILE> [<DEVICE>] [<ENABLE_CDPRUNER>] [<NUM_VISUAL_TOKENS>]");
+        throw std::runtime_error(std::string{"Usage: "} + argv[0] + " <MODEL_DIR> <IMAGE_FILE> [<DEVICE>] [<PRUNING_RATIO>] [<PRUNING_DEBUG_MODE>]");
     }
 
     std::string model_dir = argv[1];
     std::string image_file = argv[2];
     std::string device = argc > 3 ? argv[3] : "CPU";
-    bool enable_cdpruner = argc > 4 ? (std::string(argv[4]) == "true" || std::string(argv[4]) == "1") : false;
-    size_t num_visual_tokens = argc > 5 ? std::stoul(argv[5]) : 64;
+    size_t pruning_ratio = argc > 4 ? std::stoul(argv[4]) : 0;  // 0 means disabled
+    bool pruning_debug_mode = argc > 5 ? (std::string(argv[5]) == "true" || std::string(argv[5]) == "1") : false;
 
     std::vector<ov::Tensor> rgbs = utils::load_images(image_file);
 
@@ -28,32 +28,24 @@ int main(int argc, char* argv[]) try {
     if (device == "GPU") {
         enable_compile_cache.insert({ov::cache_dir("vlm_cache")});
     }
-    
+
+    if (pruning_ratio > 0) {
+        enable_compile_cache.insert({"ATTENTION_BACKEND", "PA"});
+        std::cout << "[CDPruner] Setting ATTENTION_BACKEND to PA" << std::endl;
+    }
+
     // Initialize VLMPipeline with cache configuration if needed
     ov::genai::VLMPipeline pipe(model_dir, device, enable_compile_cache);
-    
-    // Configure CDPruner if requested
-    if (enable_cdpruner) {
-        std::cout << "Enabling CDPruner with " << num_visual_tokens << " visual tokens" << std::endl;
-        pipe.set_visual_token_pruning_config(
-            num_visual_tokens,  // num_visual_tokens
-            0.5f,              // relevance_weight  
-            true               // enable_pruning
-        );
-        
-        // Print current configuration
-        auto config = pipe.get_visual_token_pruning_config();
-        std::cout << "CDPruner configuration:" << std::endl;
-        std::cout << "  - Enabled: " << (pipe.is_visual_token_pruning_enabled() ? "true" : "false") << std::endl;
-        std::cout << "  - Num visual tokens: " << config["num_visual_tokens"].as<size_t>() << std::endl;
-        std::cout << "  - Relevance weight: " << config["relevance_weight"].as<float>() << std::endl;
-    } else {
-        std::cout << "CDPruner is disabled" << std::endl;
-        pipe.set_visual_token_pruning_enabled(false);
-    }
 
     ov::genai::GenerationConfig generation_config;
     generation_config.max_new_tokens = 3000;
+    generation_config.pruning_ratio = pruning_ratio;
+    
+    // Configure CDPruner if requested
+    if (pruning_ratio > 0) {
+        std::cout << "[CDPruner] Enabling CDPruner with " << pruning_ratio << "% visual token pruning" << std::endl;
+        generation_config.pruning_debug_mode = pruning_debug_mode;
+    } 
 
     std::string prompt = "describe this image in details";
 

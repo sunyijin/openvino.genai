@@ -67,6 +67,11 @@ public:
     // finishes chat and clears a chat history 
     void finish_chat();
 
+    // set CDPruner setting
+    virtual void set_visual_token_pruning_config(size_t pruning_ratio,
+                                                 float relevance_weight,
+						 bool pruning_debug_mode = false);
+
     virtual std::pair<std::string, std::vector<size_t>> normalize_prompt(
         const std::string& prompt,
         size_t base_id,
@@ -117,8 +122,22 @@ private:
         Tokenizer get_tokenizer() const {
             return m_tokenizer;
         }
+
+        virtual void set_visual_token_pruning_config(size_t pruning_ratio,
+                                                     float relevance_weight,
+						     bool pruning_debug_mode) {
+            if (!m_vision_encoder)
+                return;
+            auto pruner_config = m_vision_encoder->get_pruning_config();
+            if (pruner_config.has_value()) {
+		pruner_config->pruning_ratio = pruning_ratio;
+                pruner_config->relevance_weight = relevance_weight;
+                pruner_config->pruning_debug_mode = pruning_debug_mode;
+            }
+            m_vision_encoder->set_pruning_config(pruner_config.value());
+        }
     
-        utils::KVCacheState& get_kv_cache_state() {
+        virtual utils::KVCacheState& get_kv_cache_state() {
             return m_kv_cache_state;
         }
     

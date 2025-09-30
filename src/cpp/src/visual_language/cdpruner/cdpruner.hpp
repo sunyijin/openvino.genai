@@ -8,6 +8,7 @@
 #include "relevance_calculator.hpp"
 #include "kernel_builder.hpp"
 #include "fast_dpp.hpp"
+#include <chrono>
 #include <vector>
 #include <iostream>
 
@@ -39,8 +40,7 @@ struct PruningStatistics {
  * Usage example:
  * ```cpp
  * Config config;
- * config.num_visual_tokens = 64;
- * config.enable_pruning = true;
+ * config.pruning_ratio = 50;  // 50% pruning, set to 0 to disable
  * 
  * CDPruner pruner(config);
  * auto selected_tokens = pruner.select_tokens(visual_features, text_features);
@@ -54,42 +54,48 @@ public:
      * @param config Configuration for CDPruner
      */
     explicit CDPruner(const Config& config);
-
-    void set_num_images(size_t num_images) { m_config.num_images = num_images; }
     
     /**
      * @brief Select diverse and relevant visual tokens
      * @param visual_features Input visual features [B, N, D]
      * @param text_features Input text features [M, D]
+     * @param silent If true, suppress detailed logging output
      * @return Selected token indices for each batch [B, T]
      */
-    std::vector<std::vector<size_t>> select_tokens(const ov::Tensor& visual_features, 
-                                                  const ov::Tensor& text_features);
-    
-    /**
-     * @brief Create pruning mask for selected tokens
-     * @param visual_features Input visual features [B, N, D]
-     * @param text_features Input text features [M, D]
-     * @return Boolean mask [B*N] where true indicates selected tokens
-     */
-    std::vector<bool> create_pruning_mask(const ov::Tensor& visual_features, 
-                                        const ov::Tensor& text_features);
+    std::vector<std::vector<size_t>> select_tokens(const ov::Tensor& visual_features,
+                                                   const ov::Tensor& text_features,
+                                                   bool silent = false);
     
     /**
      * @brief Apply pruning and return only selected features
      * @param visual_features Input visual features [B, N, D]
      * @param text_features Input text features [M, D]
-     * @return Pruned visual features [B, T, D] where T is num_visual_tokens
+     * @param silent If true, suppress detailed logging output
+     * @return Pruned visual features [B, T, D] where T is calculated from pruning_ratio
      */
-    ov::Tensor apply_pruning(const ov::Tensor& visual_features, 
-                           const ov::Tensor& text_features);
+    ov::Tensor apply_pruning(const ov::Tensor& visual_features, const ov::Tensor& text_features, bool silent = false);
+
+    /**
+     * @brief Apply pruning to multiple visual features and return concatenated result
+     * @param visual_features_list Vector of input visual features, each [B, N, D]
+     * @param text_features Input text features [M, D]
+     * @return Concatenated pruned visual features [B, T*num_frames, D] where T is calculated from pruning_ratio
+     */
+    ov::Tensor apply_pruning(const std::vector<ov::Tensor>& visual_features_list, const ov::Tensor& text_features);
     
     /**
      * @brief Get current configuration
      * @return Current configuration
      */
     const Config& get_config() const { return m_config; }
-    
+
+    /**
+     * @brief Update configuration dynamically
+     * @param new_config New configuration to apply
+     * @return true if configuration was updated successfully
+     */
+    bool update_config(const Config& new_config);
+
     /**
      * @brief Compute current pruning ratio
      * @return Ratio of selected tokens to default token count
@@ -142,9 +148,9 @@ private:
 
     Config m_config;                        ///< Configuration
     RelevanceCalculator m_relevance_calc;   ///< Relevance computation module
-    ConditionalKernelBuilder m_kernel_builder; ///< Kernel matrix construction module
-    FastGreedyDPP m_dpp_selector;          ///< DPP selection module
-    
+    ConditionalKernelBuilder m_kernel_builder;  ///< Kernel matrix construction module (with OpenVINO ops)
+    FastGreedyDPP m_dpp_selector;               ///< DPP selection module
+
     mutable PruningStatistics m_last_statistics; ///< Statistics from last operation
 };
 
